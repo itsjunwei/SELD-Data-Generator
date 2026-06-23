@@ -41,7 +41,7 @@ def main(arg):
         print('################')
         print(db_config_path, 'has been loaded!')
     
-    if taskid == 1:
+    if taskid in [1, 3, 4]:
         from data_generator.data_synthesis import DataSynthesizer
         
         data_synth = DataSynthesizer(db_config, params)
@@ -51,10 +51,12 @@ def main(arg):
         data_synth.create_metadata(add_interf=params['add_interf'])
 
         data_synth.write_metadata(scenes='target_classes')
-        data_synth.synthesize_mixtures(
-            add_interf=params['add_interf'], 
-            audio_format=params['audio_format'],
-            add_noise=params['add_noise'])
+        data_synth.synthesize_mixtures(add_interf=params['add_interf'], 
+                                       audio_format=params['audio_format'],
+                                       add_noise=params['add_noise'])
+        if params.get('make_etclr_manifest', False):
+            from data_generator.etclr_manifest import build_etclr_manifest
+            build_etclr_manifest(params)
     elif taskid == 2:
         # Synthesize test data using TAU-SRIR DB
         from data_generator.data_synthesis_test import (MetadataSynthesizer, 

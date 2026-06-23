@@ -299,7 +299,7 @@ class Ambisonics():
         if SH_type == 'complex':
             Ymn = np.zeros([Q, (N+1)**2], dtype=np.complex_)
         elif SH_type == 'real':
-            Ymn = np.zeros([Q, (N+1)**2], dtype=np.float_)
+            Ymn = np.zeros([Q, (N+1)**2], dtype=np.float64)
         else:
             raise ValueError('SH_type unknown.')
 

@@ -99,6 +99,127 @@ def get_params(arg=0):
         params['rirpath'] = TAU_SRIR_DB / 'TAU-SRIR_DB'
         params['noisepath'] = TAU_SRIR_DB / 'TAU-SNoise_DB'
         params['add_noise'] = False
+    elif task_id == 3:
+        ################################################################################
+        #### ET-CLR Phase 1 pretraining dataset
+        #### Clean, static, single-source FOA mixtures.
+        #### Use this for the current ET-CLR setup.
+        ################################################################################
+        params['db_name'] = 'FSD50K'
+        params['dataset_type'] = 'train'
+
+        # Corpus size
+        params['nb_mixtures'] = 5000          # 60 s each
+        params['mixture_duration'] = 60.0
+        params['audio_format'] = 'foa'         # ET-CLR uses FOA WXYZ-derived features only
+
+        # Output
+        params['output_dir'] = 'etclr_phase1_{}_{}mix_{}s_foa_ov{}_{}'.format(
+            params['db_name'],
+            params['nb_mixtures'],
+            int(params['mixture_duration']),
+            1,
+            params['dataset_type']
+        )
+        params['mixturepath'] /= params['output_dir']
+
+        # Sound-event setup
+        params['target_classes'] = 'all'
+        params['interf_classes'] = []
+        params['nb_events_per_classes'] = -1
+        params['max_polyphony_target'] = 1
+        params['max_polyphony_interf'] = 0
+        params['add_interf'] = False
+
+        # Dense but not continuous event scheduling.
+        # Existing code calls rng.choice(start_delay), so use a list/array of allowed gaps.
+        # params['start_delay'] = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+
+        # Room/SRIR setup
+        params['room_size_range'] = [[4., 12.], [4., 12.], [2.5, 5.]]
+        params['RT60_range'] = [0.2, 1.2]
+        params['src_pos_from_walls'] = 0.7
+        params['src_pos_from_listener'] = 1.0
+        params['mic_pos_range_percentage'] = [0.35, 0.65]
+
+        # Keep synthesis clean; your ET-CLR already applies feature augmentations.
+        params['add_noise'] = False
+        params['snr_set'] = [20, 40]
+
+        # Computation
+        params['chunksize'] = 32
+        params['max_workers'] = 32
+
+        # ET-CLR crop-manifest settings
+        params['make_etclr_manifest'] = True
+        params['etclr_phase'] = 1
+        params['etclr_crop_duration'] = 3.0
+        params['etclr_crop_hop'] = 1.5
+        params['etclr_frame_rate'] = 10          # DCASE-style metadata: 100 ms frames
+        params['etclr_min_active_fraction'] = 0.60
+        params['etclr_max_polyphony'] = 1
+        params['etclr_require_single_source'] = True
+        params['etclr_split_name'] = 'pretrain'
+
+    elif task_id == 4:
+        ################################################################################
+        #### ET-CLR Phase 2 pretraining dataset
+        #### Harder multi-source FOA mixtures for robustness after Phase 1.
+        ################################################################################
+        params['db_name'] = 'FSD50K'
+        params['dataset_type'] = 'train'
+
+        # Corpus size
+        params['nb_mixtures'] = 5000
+        params['mixture_duration'] = 60.0
+        params['audio_format'] = 'foa'
+
+        # Output
+        params['output_dir'] = 'etclr_phase2_{}_{}mix_{}s_foa_ov{}_{}'.format(
+            params['db_name'],
+            params['nb_mixtures'],
+            int(params['mixture_duration']),
+            3,
+            params['dataset_type']
+        )
+        params['mixturepath'] /= params['output_dir']
+
+        # Sound-event setup
+        params['target_classes'] = 'all'
+        params['interf_classes'] = []
+        params['nb_events_per_classes'] = -1
+        params['max_polyphony_target'] = 3
+        params['max_polyphony_interf'] = 0
+        params['add_interf'] = False
+
+        # Slightly sparser than Phase 1, because overlapping sources increase density.
+        # params['start_delay'] = np.array([0.0, 0.5, 1.0, 1.5, 2.0])
+
+        # Harder room/SRIR setup
+        params['room_size_range'] = [[4., 20.], [4., 20.], [3., 10.]]
+        params['RT60_range'] = [0.2, 2.0]
+        params['src_pos_from_walls'] = 0.5
+        params['src_pos_from_listener'] = 1.0
+        params['mic_pos_range_percentage'] = [0.3, 0.7]
+
+        # Add moderate synthetic noise only in Phase 2.
+        params['add_noise'] = True
+        params['snr_set'] = [10, 30]
+
+        # Computation
+        params['chunksize'] = 32
+        params['max_workers'] = 32
+
+        # ET-CLR crop-manifest settings
+        params['make_etclr_manifest'] = True
+        params['etclr_phase'] = 2
+        params['etclr_crop_duration'] = 3.0
+        params['etclr_crop_hop'] = 1.5
+        params['etclr_frame_rate'] = 10
+        params['etclr_min_active_fraction'] = 0.50
+        params['etclr_max_polyphony'] = 3
+        params['etclr_require_single_source'] = False
+        params['etclr_split_name'] = 'pretrain_hard'
     
     params['mic_pos'] = np.array(params['mic_pos'])
 
