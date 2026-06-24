@@ -109,7 +109,7 @@ def get_params(arg=0):
         params['dataset_type'] = 'train'
 
         # Corpus size
-        params['nb_mixtures'] = 5000          # 60 s each
+        params['nb_mixtures'] = 3600          # 60 s each
         params['mixture_duration'] = 60.0
         params['audio_format'] = 'foa'         # ET-CLR uses FOA WXYZ-derived features only
 
@@ -130,10 +130,7 @@ def get_params(arg=0):
         params['max_polyphony_target'] = 1
         params['max_polyphony_interf'] = 0
         params['add_interf'] = False
-
-        # Dense but not continuous event scheduling.
-        # Existing code calls rng.choice(start_delay), so use a list/array of allowed gaps.
-        # params['start_delay'] = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+        params['start_delay'] = 1.0
 
         # Room/SRIR setup
         params['room_size_range'] = [[4., 12.], [4., 12.], [2.5, 5.]]
@@ -147,8 +144,8 @@ def get_params(arg=0):
         params['snr_set'] = [20, 40]
 
         # Computation
-        params['chunksize'] = 32
-        params['max_workers'] = 32
+        params['chunksize'] = 4
+        params['max_workers'] = 4
 
         # ET-CLR crop-manifest settings
         params['make_etclr_manifest'] = True
@@ -170,7 +167,7 @@ def get_params(arg=0):
         params['dataset_type'] = 'train'
 
         # Corpus size
-        params['nb_mixtures'] = 5000
+        params['nb_mixtures'] = 3600
         params['mixture_duration'] = 60.0
         params['audio_format'] = 'foa'
 
@@ -191,9 +188,7 @@ def get_params(arg=0):
         params['max_polyphony_target'] = 3
         params['max_polyphony_interf'] = 0
         params['add_interf'] = False
-
-        # Slightly sparser than Phase 1, because overlapping sources increase density.
-        # params['start_delay'] = np.array([0.0, 0.5, 1.0, 1.5, 2.0])
+        params['start_delay'] = 1.0
 
         # Harder room/SRIR setup
         params['room_size_range'] = [[4., 20.], [4., 20.], [3., 10.]]
@@ -207,8 +202,8 @@ def get_params(arg=0):
         params['snr_set'] = [10, 30]
 
         # Computation
-        params['chunksize'] = 32
-        params['max_workers'] = 32
+        params['chunksize'] = 4
+        params['max_workers'] = 4
 
         # ET-CLR crop-manifest settings
         params['make_etclr_manifest'] = True
