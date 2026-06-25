@@ -1,22 +1,100 @@
-import functools
 import os
 import json
 from pathlib import Path
 import pandas as pd
 import pickle
-from multiprocessing import Manager
+from math import gcd
+from concurrent.futures import ProcessPoolExecutor
+import scipy.signal as scysignal
 
 import librosa
 import numpy as np
 import pyroomacoustics as pra
 import soundfile as sf
 from tqdm import tqdm
-from tqdm.contrib.concurrent import process_map
 from sklearn.model_selection import train_test_split
 
 import utils
 from srir.ambisonics import Ambisonics as Amb
 from srir.srir import GenerateSRIR as SRIR
+
+
+_WORKER_SYNTH = None
+_WORKER_ADD_INTERF = None
+_WORKER_ADD_NOISE = None
+_WORKER_AUDIO_FORMAT = None
+_WORKER_AMB_ENCODING = None
+
+
+def _init_data_synthesis_worker(data_synth, add_interf, add_noise, audio_format, amb_encoding):
+    """
+    Initializer for Windows-safe multiprocessing.
+
+    The heavy DataSynthesizer object is sent once per worker process,
+    not once per mixture/chunk.
+    """
+    global _WORKER_SYNTH
+    global _WORKER_ADD_INTERF
+    global _WORKER_ADD_NOISE
+    global _WORKER_AUDIO_FORMAT
+    global _WORKER_AMB_ENCODING
+
+    _WORKER_SYNTH = data_synth
+    _WORKER_ADD_INTERF = add_interf
+    _WORKER_ADD_NOISE = add_noise
+    _WORKER_AUDIO_FORMAT = audio_format
+    _WORKER_AMB_ENCODING = amb_encoding
+
+
+def _generate_one_mixture_worker(nmix):
+    return _WORKER_SYNTH.generate_mixture(
+        _WORKER_SYNTH._mixtures,
+        _WORKER_SYNTH._srir_setup,
+        None,
+        _WORKER_ADD_INTERF,
+        _WORKER_ADD_NOISE,
+        _WORKER_AUDIO_FORMAT,
+        _WORKER_AMB_ENCODING,
+        nmix,
+    )
+
+
+def _load_audio_segment_fast(path, target_sr, offset, duration):
+    """
+    Faster replacement for librosa.load(..., sr=target_sr, offset=..., duration=...).
+
+    Uses soundfile partial reads when possible.
+    Falls back to librosa for files/libsndfile cannot decode.
+    """
+    try:
+        with sf.SoundFile(path) as f:
+            native_sr = int(f.samplerate)
+            start_frame = max(0, int(round(float(offset) * native_sr)))
+            n_frames = max(1, int(round(float(duration) * native_sr)))
+
+            f.seek(start_frame)
+            audio = f.read(frames=n_frames, dtype="float32", always_2d=False)
+
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=1)
+
+        if native_sr != int(target_sr):
+            div = gcd(native_sr, int(target_sr))
+            up = int(target_sr) // div
+            down = native_sr // div
+            audio = scysignal.resample_poly(audio, up, down).astype(np.float32, copy=False)
+
+        return audio, int(target_sr)
+
+    except Exception:
+        audio, fs = librosa.load(
+            path=path,
+            sr=target_sr,
+            offset=offset,
+            duration=duration,
+            mono=True,
+        )
+        return audio.astype(np.float32, copy=False), fs
 
 def get_materials_absorption_database(root_path, surface):
     """ Get materials absorption database.
@@ -125,9 +203,7 @@ class DataSynthesizer(object):
             'walls': walls,
         }
 
-        manager = Manager()
-        self.rt60 = manager.list()
-        self.rt60.extend([None] * self._nb_mixtures)
+        self.rt60 = [None] * self._nb_mixtures
         self.mixture_params_file = os.path.join(self.params['mixturepath'], 'mixture_params.csv')
     
     def create_mixtures(self, scenes='target_classes'):
@@ -543,27 +619,34 @@ class DataSynthesizer(object):
             SH_type=self.params['SH_type'], 
             radius=self.params['radius'],)
 
-        process_map(
-            functools.partial(
-                self.generate_mixture,
-                self._mixtures,
-                self._srir_setup,
-                self.rt60,
-                add_interf,
-                add_noise,
-                audio_format,
-                amb_encoding,
-            ),
+        max_workers = int(self.params.get('max_workers', 1))
+        chunksize = int(self.params.get('chunksize', 1))
+
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_init_data_synthesis_worker,
+            initargs=(self, add_interf, add_noise, audio_format, amb_encoding),
+        ) as executor:
+            results = executor.map(
+                _generate_one_mixture_worker,
                 range(self._nb_mixtures),
-                max_workers=self.params['max_workers'],
-                chunksize=self.params['chunksize'],
-        )   
-        _mixture_params_f = open(self.mixture_params_file, 'a')
-        for nmix in range(self._nb_mixtures):
-            rt60 = self.rt60[nmix]
-            word = 'mix: {}, rt60: {} \n'.format(nmix, rt60)
-            _mixture_params_f.writelines(word)
-        _mixture_params_f.close()
+                chunksize=chunksize,
+            )
+
+            for nmix, measured_rt60 in tqdm(
+                results,
+                total=self._nb_mixtures,
+                unit='mixtures',
+                desc='Synthesizing mixtures',
+            ):
+                self.rt60[nmix] = measured_rt60
+
+        if self.params.get('measure_rt60', False):
+            with open(self.mixture_params_file, 'a') as _mixture_params_f:
+                for nmix in range(self._nb_mixtures):
+                    rt60 = self.rt60[nmix]
+                    word = 'mix: {}, rt60: {} \n'.format(nmix, rt60)
+                    _mixture_params_f.writelines(word)
 
 
     def generate_mixture(self, mixtures, srir_setups, computed_rt60,
@@ -571,6 +654,8 @@ class DataSynthesizer(object):
         """ Write mixture to disk.
 
         """
+        rng = np.random.default_rng(int(self.params.get('seed', 2024)) + 1000003 * (int(nmix) + 1))
+        measured_rt60 = None
         nmix_per_room = self._nb_mixtures
         nr, nmix_in_room = divmod(nmix, nmix_per_room)
         mixture_name = 'fold0_room{}_mix{}.flac'.format(nr, nmix_in_room)
@@ -581,7 +666,7 @@ class DataSynthesizer(object):
 
         room_size = srir_setup['room_size']
         target_audio = mixture['audiofile']
-        src_pos = srir_setup['src_pos']
+        src_pos = np.asarray(srir_setup['src_pos'], dtype=float)
         mic_pos_center = srir_setup['mic_pos_center']
         rt60 = srir_setup['rt60']
 
@@ -601,11 +686,20 @@ class DataSynthesizer(object):
             start_time = mixture['start_time'][event_id]
             timestamps = mixture['timestamps'][event_id]
 
-            audio, fs = librosa.load(
-                path=file, 
-                sr=self._mixture_setup['fs_mix'], 
-                offset=onset, 
-                duration=duration)
+            if self.params.get('fast_audio_loader', True):
+                audio, fs = _load_audio_segment_fast(
+                    path=file,
+                    target_sr=self._mixture_setup['fs_mix'],
+                    offset=onset,
+                    duration=duration,
+                )
+            else:
+                audio, fs = librosa.load(
+                    path=file,
+                    sr=self._mixture_setup['fs_mix'],
+                    offset=onset,
+                    duration=duration,
+                )
 
             if abs(duration - len(audio) / fs) > 0.2:
                 print('Audio length is less than the duration of the event {}: {}s, {}s'.format(
@@ -627,17 +721,26 @@ class DataSynthesizer(object):
             mixture_interf = mixtures['interf_classes'][nmix]
             srir_setup_interf = srir_setups['interf_classes'][nmix]
             interf_audio = mixture_interf['audiofile']
-            src_pos.extend(srir_setup_interf['src_pos'])
+            src_pos = np.concatenate([src_pos, np.asarray(srir_setup_interf['src_pos'], dtype=float)], axis=0)
 
             for event_id, file in enumerate(interf_audio):
                 onset, offset = mixture_interf['onoffset'][event_id]
                 duration = mixture_interf['duration'][event_id]
                 start_time = mixture_interf['start_time'][event_id]
-                audio, fs = librosa.load(
-                    path=file, 
-                    sr=self._mixture_setup['fs_mix'], 
-                    offset=onset, 
-                    duration=duration)
+                if self.params.get('fast_audio_loader', True):
+                    audio, fs = _load_audio_segment_fast(
+                        path=file,
+                        target_sr=self._mixture_setup['fs_mix'],
+                        offset=onset,
+                        duration=duration,
+                    )
+                else:
+                    audio, fs = librosa.load(
+                        path=file,
+                        sr=self._mixture_setup['fs_mix'],
+                        offset=onset,
+                        duration=duration,
+                    )
                 audio = utils.segment_mixtures(
                     signal=audio, 
                     fs=fs, 
@@ -675,33 +778,55 @@ class DataSynthesizer(object):
             raise ValueError('Unknown tools for SRIR generation.')
         
         """ Measure RT60 """
-        if self.params['tools'] != 'collectedRIR':
+        if self.params.get('measure_rt60', False) and self.params['tools'] != 'collectedRIR':
             _rt60 = pra.experimental.measure_rt60(
-                srir_generator.rir[0][0], fs=self._mixture_setup['fs_mix'], decay_db=60)
+                srir_generator.rir[0][0],
+                fs=self._mixture_setup['fs_mix'],
+                decay_db=60,
+            )
             _rt20 = pra.experimental.measure_rt60(
-                srir_generator.rir[0][0], fs=self._mixture_setup['fs_mix'], decay_db=20)
+                srir_generator.rir[0][0],
+                fs=self._mixture_setup['fs_mix'],
+                decay_db=20,
+            )
             _rt30 = pra.experimental.measure_rt60(
-                srir_generator.rir[0][0], fs=self._mixture_setup['fs_mix'], decay_db=30)
-            computed_rt60[nmix] = [_rt20, _rt30, _rt60]
+                srir_generator.rir[0][0],
+                fs=self._mixture_setup['fs_mix'],
+                decay_db=30,
+            )
+            measured_rt60 = [_rt20, _rt30, _rt60]
+
+            if computed_rt60 is not None:
+                computed_rt60[nmix] = measured_rt60
 
         audio_mic = srir_generator.simulate(src_pos_mic=src_pos-mic_pos_center, src_signals=src_sig)
         audio_mic = audio_mic[:, :self._mixture_setup['mixture_points']]
         
-        audio_sum = np.sum(src_sig, axis=0, keepdims=True)[:, :self._mixture_setup['mixture_points']]
-        clip_path_sum = os.path.join(self._mixture_path['sum'], mixture_name)
-        sf.write(file=clip_path_sum, data=0.1*audio_sum.T, samplerate=self._mixture_setup['fs_mix'])
+        if self.params.get('write_sum', False):
+            audio_sum = np.sum(src_sig, axis=0, keepdims=True)[:, :self._mixture_setup['mixture_points']]
+            clip_path_sum = os.path.join(self._mixture_path['sum'], mixture_name)
+            sf.write(
+                file=clip_path_sum,
+                data=0.1 * audio_sum.T,
+                samplerate=self._mixture_setup['fs_mix'],
+            )
 
         if add_noise:
-            ambience = np.random.randn(4, self._mixture_setup['mixture_points'])
-            ambience = ambience / np.max(np.abs(ambience), axis=1, keepdims=True)
-            Warning('Gaussian noise is added to the mixture.')
-            if ambience.shape[0] < self._mixture_setup['mixture_points']:
-                ambience = np.tile(ambience, (1, self._mixture_setup['mixture_points']//ambience.shape[1]+1))[:, :self._mixture_setup['mixture_points']]
+            ambience = rng.standard_normal(
+                (audio_mic.shape[0], self._mixture_setup['mixture_points'])
+            ).astype(np.float32, copy=False)
 
-            audio_energy = np.sum(np.mean(audio_mic, axis=0)**2)
-            ambience_energy = np.sum(np.mean(ambience, axis=0)**2)
-            snr = self._rnd_generator.choice(self._mixture_setup['snr_set'])
-            ambi_norm = np.sqrt(audio_energy * (10.**(-snr/10.)) / ambience_energy)
+            ambience /= np.maximum(
+                np.max(np.abs(ambience), axis=1, keepdims=True),
+                1e-12,
+            )
+
+            audio_energy = np.sum(np.mean(audio_mic, axis=0) ** 2)
+            ambience_energy = np.sum(np.mean(ambience, axis=0) ** 2)
+            snr = rng.choice(self._mixture_setup['snr_set'])
+            ambi_norm = np.sqrt(
+                audio_energy * (10.0 ** (-snr / 10.0)) / max(ambience_energy, 1e-12)
+            )
             audio_mic += ambi_norm * ambience
             
         clip_path_mic = os.path.join(self._mixture_path['mic'], mixture_name)
@@ -712,4 +837,7 @@ class DataSynthesizer(object):
             audio_foa = amb_encoding.encoding(signal=audio_mic)
             audio_foa = audio_foa[:, :self._mixture_setup['mixture_points']]
             sf.write(file=clip_path_foa, data=audio_foa.T, samplerate=self._mixture_setup['fs_mix'])
-        tqdm.write(mixture_name)
+        if self.params.get('print_each_mixture', False):
+            tqdm.write(mixture_name)
+
+        return nmix, measured_rt60

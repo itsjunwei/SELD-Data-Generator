@@ -1,6 +1,7 @@
 from pathlib import Path
 import warnings
 import numpy as np
+import os
 
 
 # Parameters used in the data generation process.
@@ -55,6 +56,13 @@ def get_params(arg=0):
         snr_set = [6, 31], # dB
         add_interf = False,
         dataset_type = 'test', # NOTE: synthesizing training sets or test sets
+
+        # Additional args for optiimzation
+        # Windows/performance controls
+        measure_rt60 = False,
+        write_sum = False,
+        print_each_mixture = False,
+        fast_audio_loader = True,
     )
 
     if task_id == 1:
@@ -144,8 +152,13 @@ def get_params(arg=0):
         params['snr_set'] = [20, 40]
 
         # Computation
-        params['chunksize'] = 4
+        params['chunksize'] = 32
         params['max_workers'] = 4
+
+        params['measure_rt60'] = False
+        params['write_sum'] = False
+        params['print_each_mixture'] = False
+        params['fast_audio_loader'] = True
 
         # ET-CLR crop-manifest settings
         params['make_etclr_manifest'] = True
@@ -202,8 +215,76 @@ def get_params(arg=0):
         params['snr_set'] = [10, 30]
 
         # Computation
-        params['chunksize'] = 4
+        params['chunksize'] = 32
         params['max_workers'] = 4
+
+        params['measure_rt60'] = False
+        params['write_sum'] = False
+        params['print_each_mixture'] = False
+        params['fast_audio_loader'] = True
+
+        # ET-CLR crop-manifest settings
+        params['make_etclr_manifest'] = True
+        params['etclr_phase'] = 2
+        params['etclr_crop_duration'] = 3.0
+        params['etclr_crop_hop'] = 1.5
+        params['etclr_frame_rate'] = 10
+        params['etclr_min_active_fraction'] = 0.50
+        params['etclr_max_polyphony'] = 3
+        params['etclr_require_single_source'] = False
+        params['etclr_split_name'] = 'pretrain_hard'
+
+    elif task_id == 5:
+        ################################################################################
+        #### ET-CLR Phase 2 pretraining dataset
+        #### Harder multi-source FOA mixtures for robustness after Phase 1.
+        ################################################################################
+        params['db_name'] = 'FSD50K'
+        params['dataset_type'] = 'train'
+
+        # Corpus size
+        params['nb_mixtures'] = 3600
+        params['mixture_duration'] = 60.0
+        params['audio_format'] = 'foa'
+
+        # Output
+        params['output_dir'] = 'leseld_phase2_{}_{}mix_{}s_foa_ov{}_{}'.format(
+            params['db_name'],
+            params['nb_mixtures'],
+            int(params['mixture_duration']),
+            3,
+            params['dataset_type']
+        )
+        params['mixturepath'] /= params['output_dir']
+
+        # Sound-event setup
+        params['target_classes'] = 'all'
+        params['interf_classes'] = []
+        params['nb_events_per_classes'] = -1
+        params['max_polyphony_target'] = 3
+        params['max_polyphony_interf'] = 0
+        params['add_interf'] = False
+        params['start_delay'] = 1.0
+
+        # Harder room/SRIR setup
+        params['room_size_range'] = [[4., 20.], [4., 20.], [3., 10.]]
+        params['RT60_range'] = [0.2, 2.0]
+        params['src_pos_from_walls'] = 0.5
+        params['src_pos_from_listener'] = 1.0
+        params['mic_pos_range_percentage'] = [0.3, 0.7]
+
+        # Add moderate synthetic noise only in Phase 2.
+        params['add_noise'] = True
+        params['snr_set'] = [10, 30]
+
+        # Computation
+        params['chunksize'] = 32
+        params['max_workers'] = 4
+
+        params['measure_rt60'] = False
+        params['write_sum'] = False
+        params['print_each_mixture'] = False
+        params['fast_audio_loader'] = True
 
         # ET-CLR crop-manifest settings
         params['make_etclr_manifest'] = True

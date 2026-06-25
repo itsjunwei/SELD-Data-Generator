@@ -41,7 +41,7 @@ def main(arg):
         print('################')
         print(db_config_path, 'has been loaded!')
     
-    if taskid in [1, 3, 4]:
+    if taskid != 2:
         from data_generator.data_synthesis import DataSynthesizer
         
         data_synth = DataSynthesizer(db_config, params)
@@ -99,6 +99,8 @@ def main(arg):
                 audio_synth_interf.synthesize_mixtures('mic')
                 audio_mixer.mix_audio('mic')
 
-
 if __name__ == '__main__':
+    import multiprocessing as mp
+
+    mp.freeze_support()
     main(sys.argv)
